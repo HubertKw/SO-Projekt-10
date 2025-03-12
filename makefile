@@ -1,44 +1,26 @@
-# Plik Makefile
-
-# Kompilator
+# Kompilator i opcje
 CC = gcc
-
-# Flagi kompilatora
-CFLAGS = -Wall -Wextra -std=c99 -g
+CFLAGS = -Wall -Wextra -pthread
 
 # Pliki źródłowe
-SRC = main.c manager.c customer.c firefighter.c
+SOURCES = main.c manager.c customer.c fireman.c utils.c error.c
+HEADERS = common.h utils.h
 
-# Pliki nagłówkowe
-HEADERS = manager.h customer.h firefighter.h
-
-# Plik wynikowy
+# Plik wykonywalny
 TARGET = supermarket
 
-# Reguła główna
 all: $(TARGET)
 
-# Reguła budowy programu
-$(TARGET): $(SRC) $(HEADERS)
-	$(CC) $(CFLAGS) $(SRC) -o $(TARGET)
+$(TARGET): $(SOURCES) $(HEADERS)
+	$(CC) $(CFLAGS) $(SOURCES) -o $(TARGET)
 
-# Reguła czyszcząca pliki wynikowe
 clean:
 	rm -f $(TARGET)
-	rm -f *.o
 
-# Reguła testowania
-test: $(TARGET)
-	./$(TARGET)
-
-# Domyślna reguła uruchamiania
 run: $(TARGET)
 	./$(TARGET)
 
-# Reguła pomocy
-help:
-	@echo "Dostępne komendy:"
-	@echo "  make all      - Kompiluje program"
-	@echo "  make clean    - Usuwa pliki wynikowe"
-	@echo "  make test     - Kompiluje i uruchamia program"
-	@echo "  make run      - Uruchamia skompilowany program"
+fire:
+	echo "FIRE" > /tmp/supermarket_fifo
+
+.PHONY: all clean run fire
