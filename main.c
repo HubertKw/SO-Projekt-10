@@ -1,96 +1,102 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
-#include <sys/types.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <sys/sem.h>
-#include <errno.h>
-#include "manager.h"
-#include "customer.h"
-#include "firefighter.h"
+#include "common.h"
+#include "utils.h"
 
-#define K 5 // Minimalna liczba klientów na kasę
-#define MAX_CASHIERS 10 // Maksymalna liczba kas w supermarkecie
-#define MIN_CASHIERS 2 // Minimalna liczba otwartych kas
+// Deklaracje funkcji importowanych z innych modułów
+extern void manager_process(int customers_per_register);
+extern void customer_process(int num_customers);
+extern void fireman_process();
 
-// Globalne zmienne
-int shm_id; // ID pamięci współdzielonej
-int sem_id; // ID semaforów
-
-// Funkcja czyszcząca zasoby systemowe
-void cleanup() {
-    // Usuwanie pamięci współdzielonej
-    if (shmctl(shm_id, IPC_RMID, NULL) == -1) {
-        perror("Błąd usuwania pamięci współdzielonej");
+int main(int argc, char *argv[]) {
+    pid_t manager_pid, customer_pid, fireman_pid;
+    int status;
+    int customers_per_register = 5; // domyślna wartość K
+    int num_customers = 20;         // domyślna liczba klientów
+    
+    // Sprawdzenie argumentów wiersza poleceń
+    if (argc > 1) {
+        customers_per_register = atoi(argv[1]);
     }
-    // Usuwanie semaforów
-    if (semctl(sem_id, 0, IPC_RMID) == -1) {
-        perror("Błąd usuwania semaforów");
+    
+    if (argc > 2) {
+        num_customers = atoi(argv[2]);
     }
-}
-
-// Obsługa sygnałów, np. SIGINT do zakończenia programu
-void signal_handler(int sig) {
-    if (sig == SIGINT) {
-        printf("\nZamykanie supermarketu...\n");
-        cleanup();
-        exit(0);
+    
+    // Walidacja danych wejściowych
+    if (!validate_input(customers_per_register, num_customers)) {
+        fprintf(stderr, "Nieprawidłowe dane wejściowe. Używam wartości domyślnych.\n");
+        customers_per_register = 5;
+        num_customers = 20;
     }
-}
-
-int main() {
-    // Rejestracja obsługi sygnałów
-    signal(SIGINT, signal_handler);
-
-    // Tworzenie pamięci współdzielonej na przechowywanie stanu kas
-    shm_id = shmget(IPC_PRIVATE, sizeof(int) * MAX_CASHIERS, IPC_CREAT | 0660);
-    if (shm_id == -1) {
-        perror("Błąd tworzenia pamięci współdzielonej");
-        exit(EXIT_FAILURE);
+    
+    printf("Parametry symulacji:\n");
+    printf("- Liczba klientów na kasę (K): %d\n", customers_per_register);
+    printf("- Liczba klientów: %d\n", num_customers);
+    printf("- Minimalnie czynne kasy: %d\n", MIN_REGISTERS);
+    printf("- Maksymalna liczba kas: %d\n", MAX_REGISTERS);
+    
+    // Inicjalizacja obsługi sygnałów
+    setup_signal_handlers();
+    
+    // Czyszczenie zasobów w przypadku ich poprzedniego istnienia
+    cleanup_resources();
+    
+    // Tworzenie procesu kierownika supermarketu
+    manager_pid = fork();
+    if (manager_pid == -1) {
+        handle_error(ERROR_FORK, "Nie można utworzyć procesu kierownika");
+        return EXIT_FAILURE;
+    } else if (manager_pid == 0) {
+        // Proces potomny - kierownik
+        manager_process(customers_per_register);
+        exit(EXIT_SUCCESS);
     }
-
-    // Tworzenie zestawu semaforów do synchronizacji procesów
-    sem_id = semget(IPC_PRIVATE, 1, IPC_CREAT | 0660);
-    if (sem_id == -1) {
-        perror("Błąd tworzenia semaforów");
-        cleanup();
-        exit(EXIT_FAILURE);
+    
+    // Małe opóźnienie, aby kierownik zdążył zainicjalizować supermarket
+    sleep(1);
+    
+    // Tworzenie procesu strażaka
+    fireman_pid = fork();
+    if (fireman_pid == -1) {
+        handle_error(ERROR_FORK, "Nie można utworzyć procesu strażaka");
+        kill(manager_pid, SIGTERM);
+        return EXIT_FAILURE;
+    } else if (fireman_pid == 0) {
+        // Proces potomny - strażak
+        fireman_process();
+        exit(EXIT_SUCCESS);
     }
-
-    // Inicjalizacja wartości semafora na 1 (dostęp do sekcji krytycznej)
-    if (semctl(sem_id, 0, SETVAL, 1) == -1) {
-        perror("Błąd inicjalizacji semafora");
-        cleanup();
-        exit(EXIT_FAILURE);
+    
+    // Tworzenie procesu klienta (główny proces tworzący wątki klientów)
+    customer_pid = fork();
+    if (customer_pid == -1) {
+        handle_error(ERROR_FORK, "Nie można utworzyć procesu klienta");
+        kill(manager_pid, SIGTERM);
+        kill(fireman_pid, SIGTERM);
+        return EXIT_FAILURE;
+    } else if (customer_pid == 0) {
+        // Proces potomny - klient
+        customer_process(num_customers);
+        exit(EXIT_SUCCESS);
     }
-
-    // Inicjalizacja modułu zarządzania kasami
-    if (initialize_manager(shm_id, sem_id, MIN_CASHIERS) == -1) {
-        perror("Błąd inicjalizacji managera");
-        cleanup();
-        exit(EXIT_FAILURE);
-    }
-
-    // Uruchamianie symulacji klientów
-    if (start_customers(shm_id, sem_id) == -1) {
-        perror("Błąd uruchamiania klientów");
-        cleanup();
-        exit(EXIT_FAILURE);
-    }
-
-    // Uruchamianie strażaka odpowiedzialnego za alarm pożarowy
-    if (start_firefighter(shm_id, sem_id) == -1) {
-        perror("Błąd uruchamiania strażaka");
-        cleanup();
-        exit(EXIT_FAILURE);
-    }
-
-    // Główna pętla programu (symulacja działania supermarketu)
-    while (1) {
-        sleep(1); // Wykonywanie operacji co sekundę
-    }
-
-    return 0;
+    
+    // Proces główny czeka na zakończenie wszystkich procesów potomnych
+    printf("Proces główny czeka na zakończenie procesów potomnych.\n");
+    waitpid(customer_pid, &status, 0);
+    printf("Proces klienta zakończył działanie.\n");
+    
+    // Po zakończeniu wszystkich klientów, wyślij sygnał zakończenia do menedżera i strażaka
+    kill(manager_pid, SIGTERM);
+    kill(fireman_pid, SIGTERM);
+    
+    waitpid(manager_pid, &status, 0);
+    printf("Proces kierownika zakończył działanie.\n");
+    
+    waitpid(fireman_pid, &status, 0);
+    printf("Proces strażaka zakończył działanie.\n");
+    
+    // Czyszczenie zasobów systemowych
+    cleanup_resources();
+    
+    printf("Symulacja supermarketu zakończona pomyślnie.\n");
+    return EXIT_SUCCESS;
 }
